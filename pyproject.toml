@@ -11,6 +11,12 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+# The warehouse leg: BigQuery loader + dbt. Separate extra so the
+# ingestion jobs stay a one-dependency install.
+warehouse = [
+    "google-cloud-bigquery>=3,<4",
+    "dbt-bigquery>=1.8,<2",
+]
 
 # Only `ingestion` is the package; data/ and state/ are runtime artifacts
 # that setuptools' flat-layout auto-discovery would otherwise trip over.

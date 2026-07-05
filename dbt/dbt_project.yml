@@ -1,0 +1,22 @@
+# dbt project: transforms the raw layer (loaded by `load-bigquery`) into
+# tested, documented models. Staging = parse & dedupe; marts = the tables
+# analyses actually query.
+name: polymarket
+version: "0.1.0"
+profile: polymarket
+
+model-paths: ["models"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  polymarket:
+    staging:
+      # Views: always-current windows over raw, no storage cost. The
+      # heavy lifting (JSON parsing, dedup) re-runs per query, which is
+      # fine at this size; marts materialize the results.
+      +materialized: view
+    marts:
+      +materialized: table

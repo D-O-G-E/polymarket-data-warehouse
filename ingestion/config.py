@@ -67,6 +67,11 @@ class Settings:
     # within this many days, so resolutions are captured.
     closed_lookback_days: int = 14
 
+    # --- load-bigquery ---
+    bq_project: str | None = None
+    bq_dataset: str = "polymarket_raw"
+    bq_location: str = "US"
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -79,4 +84,7 @@ class Settings:
             volume_floor=float(_env("PDW_VOLUME_FLOOR", "10000")),
             initial_lookback_days=int(_env("PDW_INITIAL_LOOKBACK_DAYS", "30")),
             closed_lookback_days=int(_env("PDW_CLOSED_LOOKBACK_DAYS", "14")),
+            bq_project=os.environ.get("PDW_BQ_PROJECT"),
+            bq_dataset=_env("PDW_BQ_DATASET", "polymarket_raw"),
+            bq_location=_env("PDW_BQ_LOCATION", "US"),
         )

@@ -1,0 +1,16 @@
+# Connection profile, checked in deliberately: it contains no secrets.
+# Auth is Application Default Credentials (`gcloud auth application-default login`)
+# and the project id comes from the PDW_BQ_PROJECT env var.
+# Run dbt from this directory (or set DBT_PROFILES_DIR to it).
+polymarket:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('PDW_BQ_PROJECT', 'set-PDW_BQ_PROJECT') }}"
+      dataset: polymarket_dw
+      location: US
+      threads: 4
+      priority: interactive
+      job_execution_timeout_seconds: 300

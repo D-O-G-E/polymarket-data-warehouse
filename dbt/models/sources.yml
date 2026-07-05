@@ -1,0 +1,31 @@
+version: 2
+
+sources:
+  - name: polymarket_raw
+    description: >
+      Raw layer loaded by `python -m ingestion load-bigquery`. Append-only:
+      one row per entity per fetch, full payloads untouched, duplicates
+      expected and resolved in staging.
+    schema: polymarket_raw
+    tables:
+      - name: raw_markets
+        description: >
+          One row per market per catalog-sync fetch. The payload column
+          holds the complete Gamma market object as JSON; note that
+          outcomes/outcomePrices/clobTokenIds are JSON-encoded *strings*
+          inside it (a Gamma quirk).
+        config:
+          loaded_at_field: _ingested_at
+          freshness:
+            warn_after: {count: 24, period: hour}
+            error_after: {count: 72, period: hour}
+      - name: raw_price_history
+        description: >
+          One row per (CLOB token, unix timestamp): implied probability of
+          the Yes outcome. fidelity_minutes records the resolution actually
+          obtained (60 = live harvest; coarser = post-resolution backfill).
+        config:
+          loaded_at_field: _ingested_at
+          freshness:
+            warn_after: {count: 24, period: hour}
+            error_after: {count: 48, period: hour}

@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: stg_markets
+    description: >
+      Latest clean row per market, parsed from the raw JSON payload.
+      Grain: one row per market_id.
+    columns:
+      - name: market_id
+        description: Gamma's market id (primary key).
+        tests: [unique, not_null]
+      - name: yes_token_id
+        description: >
+          CLOB token id of the Yes outcome — the join key to price data.
+          Null when the market shipped broken clobTokenIds (old markets do).
+      - name: is_closed
+        description: True once trading has ended.
+      - name: uma_resolution_status
+        description: Oracle status string; "resolved" when officially settled.
+
+  - name: stg_prices
+    description: >
+      Deduplicated price points. Grain: one row per (token_id, unix
+      timestamp). price = implied probability of the Yes outcome.
+    columns:
+      - name: price_id
+        description: Surrogate key token_id:t.
+        tests: [unique, not_null]
+      - name: token_id
+        tests: [not_null]
+      - name: price
+        description: Implied probability, must lie in [0, 1].
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+      - name: fidelity_minutes
+        description: >
+          Resolution of the source series for this point (60 = hourly live
+          harvest; 720/1440 = coarse post-resolution backfill). Analyses
+          must not silently mix granularities.
+        tests: [not_null]

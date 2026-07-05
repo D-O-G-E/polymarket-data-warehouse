@@ -1,0 +1,65 @@
+version: 2
+
+models:
+  - name: dim_markets
+    description: One row per market, current state. History is in markets_snapshot.
+    columns:
+      - name: market_id
+        tests: [unique, not_null]
+
+  - name: fct_prices
+    description: >
+      Price fact table. Grain: one row per (token, timestamp). Incremental,
+      partitioned by price_date, clustered by token_id.
+    columns:
+      - name: price_id
+        tests: [unique, not_null]
+      - name: price_ts
+        tests: [not_null]
+      - name: price
+        tests: [not_null]
+      - name: market_id
+        description: >
+          Warn-level relationship: a price row's market should exist in
+          dim_markets. Warn rather than error because catalog and price
+          sweeps run on different schedules and can briefly disagree.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_markets')
+                field: market_id
+              config:
+                severity: warn
+
+  - name: fct_resolutions
+    description: >
+      One row per resolved binary market with an unambiguous outcome,
+      derived from terminal outcomePrices (see model SQL for the inference
+      and its exclusions).
+    columns:
+      - name: market_id
+        tests: [unique, not_null]
+      - name: outcome
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["yes", "no"]
+      - name: resolved_at
+        tests: [not_null]
+
+  - name: mart_calibration
+    description: >
+      Calibration of Polymarket prices at fixed horizons before resolution.
+      Grain: one row per (horizon_hours, price_bucket). Perfect calibration
+      means outcome_rate ≈ avg_price in every bucket.
+    columns:
+      - name: n_markets
+        tests: [not_null]
+      - name: outcome_rate
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true

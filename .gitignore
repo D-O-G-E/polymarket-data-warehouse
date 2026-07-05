@@ -11,3 +11,9 @@ venv/
 
 # pip editable-install build artifact
 *.egg-info/
+
+# dbt build artifacts
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+logs/

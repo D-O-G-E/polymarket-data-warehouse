@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 
 from ingestion.config import Settings
-from ingestion.jobs import backfill_prices, harvest_prices, sync_catalog
+from ingestion.jobs import backfill_prices, harvest_prices, load_bigquery, sync_catalog
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,6 +61,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-markets", type=int, help="process at most N markets this run")
     p.add_argument("--end-date-min", help="only markets that ended on/after this date (YYYY-MM-DD)")
 
+    p = sub.add_parser(
+        "load-bigquery",
+        help="load pending JSONL files into BigQuery raw tables, then archive them to data/loaded/",
+    )
+    p.add_argument("--project", help="GCP project id (or set PDW_BQ_PROJECT)")
+    p.add_argument("--dataset", help="raw dataset name (default polymarket_raw)")
+    p.add_argument(
+        "--include-events",
+        action="store_true",
+        help="also load raw_events (large and redundant; off by default for the sandbox storage cap)",
+    )
+    p.add_argument("--max-files", type=int, help="load at most N files this run")
+
     return parser
 
 
@@ -105,5 +118,13 @@ def main(argv: list[str] | None = None) -> int:
             volume_floor=args.volume_floor,
             max_markets=args.max_markets,
             end_date_min=args.end_date_min,
+        )
+    elif args.job == "load-bigquery":
+        load_bigquery.run(
+            settings,
+            project=args.project,
+            dataset=args.dataset,
+            include_events=args.include_events,
+            max_files=args.max_files,
         )
     return 0

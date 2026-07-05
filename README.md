@@ -80,6 +80,7 @@ flexibility is the point of a warehouse.
 | `sync-catalog` | every run (cron) | Lands full raw market + event payloads: everything open, plus anything closed in the last 14 days (captures resolutions). `--full` sweeps the whole catalog once at project start. |
 | `harvest-prices` | every run (cron) | The job the warehouse exists for: hourly prices for active markets above a volume floor, incremental via per-token watermarks. |
 | `backfill-prices` | manual, rerunnable | Coarse history for already-resolved markets, best-volume first, at whatever fidelity survived pruning. Resumes where it left off. |
+| `load-bigquery` | every run (cron) | Ships pending JSONL files into BigQuery raw tables, then archives them to `data/loaded/` — the filesystem is the load-state. Catalog payloads land in a native JSON column so schema drift can't break a load. `raw_events` is opt-in (`--include-events`): ~4× the bytes, all redundant, against a 10 GiB sandbox cap. |
 
 ```bash
 # first-time setup
@@ -99,6 +100,36 @@ python -m ingestion harvest-prices
 # tests
 python -m pytest
 ```
+
+## Warehouse (BigQuery + dbt)
+
+One-time setup: create a GCP project (BigQuery sandbox — free, no credit
+card) at console.cloud.google.com, install the
+[Google Cloud SDK](https://cloud.google.com/sdk/docs/install), then:
+
+```bash
+gcloud auth application-default login     # credentials for loader + dbt
+setx PDW_BQ_PROJECT your-project-id       # or $env:PDW_BQ_PROJECT / export
+
+pip install -e .[dev,warehouse]           # adds google-cloud-bigquery + dbt-bigquery
+python -m ingestion load-bigquery         # raw JSONL -> polymarket_raw dataset
+
+cd dbt
+dbt deps --profiles-dir .
+dbt build --profiles-dir .                # models + snapshot + all tests
+dbt source freshness --profiles-dir .     # is the harvester alive?
+dbt docs generate --profiles-dir .        # lineage graph + docs site
+```
+
+dbt layout: `staging/` parses the JSON payloads and dedupes (views);
+`marts/` materializes `dim_markets`, `fct_prices` (incremental,
+date-partitioned, merge on price_id), `fct_resolutions` (outcome derived
+from terminal prices — see model SQL for the documented inference), and
+`mart_calibration` (fixed-horizon calibration with Wilson intervals and
+Brier scores). `snapshots/` keeps SCD2 history of market metadata keyed
+on Gamma's updatedAt. Tests cover uniqueness, nulls, price ∈ [0,1],
+outcome values, and a warn-level prices→markets relationship; source
+freshness turns a dead harvester into a failing check.
 
 ## Code tour
 
@@ -245,19 +276,13 @@ choice. Override via `PDW_*` environment variables (e.g.
 
 ## Roadmap
 
-This repo is step 1 of 4. The full shape, in build order:
-
-1. **Ingest** *(this repo — done)*: raw JSONL landing zone. ✅
-2. **Load**: ship landed files into a BigQuery (free sandbox) dataset;
-   watermark state moves from the local JSON file into the warehouse
-   itself (`SELECT MAX(t) … GROUP BY token_id`), which is what makes
-   ephemeral CI runners viable.
-3. **Transform**: dbt — staging models that parse the stringified JSON
-   and dedupe; a snapshot on market metadata (questions and end-dates
-   get edited: a real SCD2); marts `dim_markets`, `fct_prices`,
-   `fct_resolutions`, `mart_calibration`; schema tests (unique,
-   not-null, price ∈ [0,1], relationships) and source-freshness checks
-   so a dead harvester fails loudly.
-4. **Ops + serve**: Dockerfile; GitHub Actions cron (~6h) running
+1. **Ingest** — raw JSONL landing zone. ✅
+2. **Load** — `load-bigquery` into a BigQuery sandbox dataset. ✅
+   (future: watermark state moves from the local JSON file into the
+   warehouse itself — `SELECT MAX(t) … GROUP BY token_id` — which is
+   what makes ephemeral CI runners viable)
+3. **Transform** — dbt staging/snapshot/marts with tests, docs and
+   source-freshness checks. ✅ (see [Warehouse](#warehouse-bigquery--dbt))
+4. **Ops + serve** — Dockerfile; GitHub Actions cron (~6h) running
    ingest → load → `dbt build`; a small dashboard publishing the
-   calibration curve and Brier scores by category.
+   calibration curve and Brier scores by category. ⬅ next
