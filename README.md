@@ -7,6 +7,11 @@ layer that BigQuery and dbt will build on (see [Roadmap](#roadmap)).
 
 No API keys, no wallet, no cost: Polymarket's read endpoints are public.
 
+> **New to data engineering?** [EXPLAINED.md](EXPLAINED.md) spells out
+> every concept and file from scratch — what a pipeline/warehouse/sink
+> is, a plain-English tour of the code, an end-to-end trace of one price
+> point, and an honest "is this overengineered?" discussion.
+
 ```
                         ┌─────────────────────────────────────────────┐
                         │                POLYMARKET                   │
