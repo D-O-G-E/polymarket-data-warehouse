@@ -1,0 +1,13 @@
+# landed raw data and job state are runtime artifacts, never source
+data/
+state/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# pip editable-install build artifact
+*.egg-info/
