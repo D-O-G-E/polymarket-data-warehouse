@@ -53,9 +53,19 @@ def run(
     market_floor = {"volume_num_min": volume_floor} if volume_floor else {}
     event_floor = {"volume_min": volume_floor} if volume_floor else {}
 
+    # --full sweeps open and closed EXPLICITLY rather than omitting the
+    # closed param: a floored markets sweep with no closed param silently
+    # returns only open markets (verified live 2026-07 — 4.8k rows where
+    # open+closed is in the hundreds of thousands).
     if full:
-        market_sweeps = [("all", {**market_floor})]
-        event_sweeps = [("all", {**event_floor})]
+        market_sweeps = [
+            ("open", {"closed": "false", **market_floor}),
+            ("closed", {"closed": "true", **market_floor}),
+        ]
+        event_sweeps = [
+            ("open", {"closed": "false", **event_floor}),
+            ("closed", {"closed": "true", **event_floor}),
+        ]
     else:
         market_sweeps = [
             ("open", {"closed": "false", **market_floor}),

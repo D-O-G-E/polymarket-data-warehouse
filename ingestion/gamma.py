@@ -49,12 +49,19 @@ class GammaClient:
         url = self._base_url + path
 
         cursor: str | None = None
-        for page_no in range(MAX_PAGES):
+        total = 0
+        for page_no in range(1, MAX_PAGES + 1):
             if cursor is not None:
                 params["after_cursor"] = cursor
             data = self._http.get_json(url, params)
             rows = data.get(rows_key) or []
+            total += len(rows)
             yield from rows
+
+            # Long sweeps (the full catalog is thousands of pages) should
+            # visibly make progress rather than look hung.
+            if page_no % 25 == 0:
+                log.info("%s: %d pages, %d rows so far", path, page_no, total)
 
             next_cursor = data.get("next_cursor")
             if not rows or not next_cursor or next_cursor == cursor:

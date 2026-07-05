@@ -14,6 +14,7 @@ refetches — the job is safe to rerun any time.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import time
 from typing import Iterator
@@ -78,18 +79,17 @@ def run(
     run_id = new_run_id("harvest-prices")
     floor = volume_floor if volume_floor is not None else settings.volume_floor
 
-    # Materialize the target list first (highest volume first) so the long
-    # CLOB loop doesn't hold a Gamma cursor open.
-    markets = list(
-        gamma.iter_markets(
-            closed="false",
-            volume_num_min=floor,
-            order="volumeNum",
-            ascending="false",
-        )
+    # Slice BEFORE materializing: with --max-markets N only ceil(N/100)
+    # catalog pages are fetched, not the whole filtered catalog.
+    market_iter = gamma.iter_markets(
+        closed="false",
+        volume_num_min=floor,
+        order="volumeNum",
+        ascending="false",
     )
     if max_markets is not None:
-        markets = markets[:max_markets]
+        market_iter = itertools.islice(market_iter, max_markets)
+    markets = list(market_iter)
     log.info("harvesting %d active markets (volume >= %s)", len(markets), floor)
 
     fetched = skipped_fresh = skipped_no_token = failures = points = 0

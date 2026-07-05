@@ -186,6 +186,10 @@ were discovered only because probes failed in interesting ways.
   error message points to `/markets/keyset` — cursor pagination via
   `after_cursor`/`next_cursor` (documented for events in the OpenAPI
   spec, undocumented but working for markets). All sweeps use keyset.
+- A floored markets sweep (`volume_num_min`) **without an explicit
+  `closed` param silently returns only open markets** — ~4.8k rows where
+  open+closed is in the hundreds of thousands. Every sweep here passes
+  `closed` explicitly. (Events don't have this quirk.)
 - `outcomes`, `outcomePrices`, `clobTokenIds` arrive as **JSON-encoded
   strings**, not arrays (`'["Yes", "No"]'`). Old markets ship broken or
   empty values; parsing is tolerant, skips are counted and logged.

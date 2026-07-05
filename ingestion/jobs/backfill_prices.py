@@ -13,6 +13,7 @@ most liquid (analytically most valuable) markets first.
 
 from __future__ import annotations
 
+import itertools
 import logging
 
 import requests
@@ -47,17 +48,19 @@ def run(
     run_id = new_run_id("backfill-prices")
     floor = volume_floor if volume_floor is not None else settings.volume_floor
 
-    markets = list(
-        gamma.iter_markets(
-            closed="true",
-            volume_num_min=floor,
-            end_date_min=end_date_min,
-            order="volumeNum",
-            ascending="false",
-        )
+    # Slice BEFORE materializing: --max-markets 500 fetches 5 catalog
+    # pages and starts landing prices within seconds, instead of paging
+    # the entire closed catalog up front.
+    market_iter = gamma.iter_markets(
+        closed="true",
+        volume_num_min=floor,
+        end_date_min=end_date_min,
+        order="volumeNum",
+        ascending="false",
     )
     if max_markets is not None:
-        markets = markets[:max_markets]
+        market_iter = itertools.islice(market_iter, max_markets)
+    markets = list(market_iter)
     log.info(
         "backfilling %d resolved markets (volume >= %s%s)",
         len(markets),
