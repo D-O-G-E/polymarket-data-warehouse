@@ -80,7 +80,7 @@ flexibility is the point of a warehouse.
 | `sync-catalog` | every run (cron) | Lands full raw market + event payloads: everything open, plus anything closed in the last 14 days (captures resolutions). `--full` sweeps the whole catalog once at project start. |
 | `harvest-prices` | every run (cron) | The job the warehouse exists for: hourly prices for active markets above a volume floor, incremental via per-token watermarks. |
 | `backfill-prices` | manual, rerunnable | Coarse history for already-resolved markets, best-volume first, at whatever fidelity survived pruning. Resumes where it left off. |
-| `load-bigquery` | every run (cron) | Ships pending JSONL files into BigQuery raw tables, then archives them to `data/loaded/` — the filesystem is the load-state. Catalog payloads land in a native JSON column so schema drift can't break a load. `raw_events` is opt-in (`--include-events`): ~4× the bytes, all redundant, against a 10 GiB sandbox cap. |
+| `load-bigquery` | every run (cron) | Ships pending JSONL files into BigQuery raw tables, then archives them to `data/loaded/` — the filesystem is the load-state. Catalog payloads land in a native JSON column so schema drift can't break a load. `raw_events` is opt-in (`--include-events`): ~4× the bytes, all redundant. |
 
 ```bash
 # first-time setup
@@ -103,9 +103,14 @@ python -m pytest
 
 ## Warehouse (BigQuery + dbt)
 
-One-time setup: create a GCP project (BigQuery sandbox — free, no credit
-card) at console.cloud.google.com, install the
-[Google Cloud SDK](https://cloud.google.com/sdk/docs/install), then:
+One-time setup: create a GCP project at console.cloud.google.com and
+install the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install).
+**Enable billing on the project** — learned the hard way: the no-card
+sandbox forbids DML (dbt snapshots and incremental merges fail on their
+second run) and silently stamps 60-day expirations on every dataset,
+table, and partition. With billing enabled the always-free tier (10 GiB
+storage, 1 TiB queries/month) still covers this project's scale, so the
+realistic cost is ~$0; set a $1 budget alert for peace of mind. Then:
 
 ```bash
 gcloud auth application-default login     # credentials for loader + dbt
@@ -277,7 +282,7 @@ choice. Override via `PDW_*` environment variables (e.g.
 ## Roadmap
 
 1. **Ingest** — raw JSONL landing zone. ✅
-2. **Load** — `load-bigquery` into a BigQuery sandbox dataset. ✅
+2. **Load** — `load-bigquery` into BigQuery. ✅
    (future: watermark state moves from the local JSON file into the
    warehouse itself — `SELECT MAX(t) … GROUP BY token_id` — which is
    what makes ephemeral CI runners viable)
