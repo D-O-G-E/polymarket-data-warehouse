@@ -5,16 +5,14 @@
 # durable record of what actually landed. Failed loads self-correct: the
 # watermark stays behind and the next run refetches the gap.
 #
-# Cron cadence note: every 12h while the repo is private (GitHub's free
-# tier is 2,000 Actions minutes/month for private repos and a run takes
-# a while); bump to */6 once the repo is public (public = unlimited
-# minutes) — live markets retain ~15 days of hourly history, so 12h
-# cadence loses nothing, it just batches bigger.
+# Cadence: every 6h — public repos get unlimited Actions minutes. Live
+# markets retain ~15 days of hourly history, so even a multi-day outage
+# loses nothing; the cadence is about freshness, not completeness.
 name: pipeline
 
 on:
   schedule:
-    - cron: "23 5,17 * * *"
+    - cron: "23 */6 * * *"
   workflow_dispatch: {}
 
 concurrency:
