@@ -12,6 +12,9 @@ venv/
 # pip editable-install build artifact
 *.egg-info/
 
+# generated dashboard (rebuilt by the pipeline, published to gh-pages)
+site/
+
 # dbt build artifacts
 dbt/target/
 dbt/dbt_packages/

@@ -303,6 +303,16 @@ At scale this orchestration would graduate to Airflow or Dagster —
 worth it when there are dozens of interdependent DAGs, not three jobs
 and a cron.
 
+## Serve
+
+`dashboard/build.py` queries the marts and renders a single self-contained
+HTML page — the calibration curves at three horizons with Wilson-interval
+whiskers and sample-size strips, Brier scores, headline counts, hover
+tooltips, and a data-table fallback. No server, no JS framework: the
+pipeline's last step regenerates it and pushes it to the `gh-pages`
+branch, so it self-updates twice a day. Point GitHub Pages at that branch
+(Settings → Pages) once the repo is public and it serves at a stable URL.
+
 ## Roadmap
 
 1. **Ingest** — raw JSONL landing zone. ✅
@@ -311,5 +321,9 @@ and a cron.
    source-freshness checks. ✅ (see [Warehouse](#warehouse-bigquery--dbt))
 4. **Ops** — Dockerfile, scheduled pipeline + CI on GitHub Actions,
    warehouse-derived watermarks. ✅
-5. **Serve** — a small dashboard publishing the calibration curve and
-   Brier scores by category. ⬅ next
+5. **Serve** — self-updating calibration dashboard on GitHub Pages. ✅
+
+v2 candidates, deliberately out of scope: trade-level data from the Data
+API (that's where real volume lives), favorite–longshot and per-category
+cuts in the dashboard, and the Iceberg/Spark lakehouse port as a
+compare-and-contrast exercise.

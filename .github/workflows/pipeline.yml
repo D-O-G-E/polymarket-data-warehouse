@@ -25,6 +25,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    permissions:
+      contents: write  # push the generated dashboard to gh-pages
     env:
       PDW_BQ_PROJECT: polymarket-dw
       GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-key.json
@@ -60,3 +62,15 @@ jobs:
       - name: Source freshness
         working-directory: dbt
         run: dbt source freshness --profiles-dir .
+
+      - name: Build dashboard
+        run: python dashboard/build.py
+
+      # Serves at the GitHub Pages URL once the repo is public and Pages
+      # is pointed at the gh-pages branch; until then the branch just
+      # quietly accumulates the latest render.
+      - name: Publish dashboard
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
