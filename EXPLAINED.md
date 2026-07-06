@@ -32,8 +32,8 @@ here it'll be BigQuery, with tables like "every hourly price of every
 market". Why not just call Polymarket's API whenever you have a question?
 
 Because this particular source **destroys its own data**. Once a market
-resolves, Polymarket deletes its fine-grained price history (we verified
-this: a resolved market returns nothing at hourly resolution, but still
+resolves, Polymarket deletes its fine-grained price history (verified
+directly: a resolved market returns nothing at hourly resolution, but still
 returns 12-hourly points). Every interesting question — "was the market
 right?" — is about *resolved* markets. So hourly prices must be captured
 *while markets are live*, by someone, continuously. That someone is this
@@ -80,8 +80,9 @@ This repo achieves it with a two-part deal:
    duplicates collapse.
 
 Result: any job can be killed and re-run at any moment with zero thought.
-You experienced this: the interrupted backfill, the truncated sweep —
-nothing needed cleanup, everything was fixed by re-running.
+This was battle-tested during development — an interrupted backfill, a
+silently-truncated catalog sweep, files deleted before loading — and in
+every case nothing needed cleanup; re-running fixed it.
 
 ---
 
@@ -112,7 +113,7 @@ nothing needed cleanup, everything was fixed by re-running.
 | **orchestration** | the thing that runs jobs on a schedule (Airflow, Dagster, or humble cron) | GitHub Actions cron, next phase |
 | **staging model** | dbt SQL that cleans/dedupes raw data | next phase |
 | **mart** | the final, polished table an analysis actually queries | next phase (`mart_calibration`) |
-| **SCD2 / snapshot** | keeping *history* of a record as it changes ("slowly changing dimension") — market questions get edited; we keep every version | enabled by sync-catalog re-landing payloads each run |
+| **SCD2 / snapshot** | keeping *history* of a record as it changes ("slowly changing dimension") — market questions get edited; every version is kept | enabled by sync-catalog re-landing payloads each run |
 
 ---
 
@@ -208,7 +209,7 @@ For each active market above the volume floor:
    *deliberately* refetch a little: duplicates are free (dedup), gaps
    are forever.
 3. Split the window into ≤14-day chunks (the API silently returns
-   nothing for longer spans — the nastiest bug we found).
+   nothing for longer spans — the nastiest bug this project surfaced).
 4. Fetch each chunk, write the points, and **only then** advance the
    watermark. This ordering is the whole crash-safety story: die at any
    line, and the next run refetches rather than skips.
@@ -225,6 +226,17 @@ whatever survived Polymarket's pruning, tagging each row with the
 fidelity actually used — so analyses can honestly say "this series is
 12-hourly, not hourly". Finished tokens are marked in state, so the job
 resumes across runs and you can chip away with `--max-markets 2000`.
+
+### `ingestion/jobs/load_bigquery.py` — raw files into the warehouse
+
+Covered in depth in Part 7; the one-line version: upload each pending
+JSONL file into a BigQuery raw table, then move it to `data/loaded/` so
+the filesystem itself records what's been shipped.
+
+### `dashboard/build.py` — the marts become a web page
+
+Covered in Part 10: queries the finished marts and writes one static,
+self-contained HTML dashboard.
 
 ### `ingestion/cli.py` and `__main__.py` — the front door
 
@@ -308,7 +320,7 @@ So: **for a one-weekend toy, yes, this would be overengineered.** For a
 system meant to run unattended every 6 hours for months — which is the
 stated goal, and the thing that makes it a *pipeline* rather than a
 script — each piece answers a failure that *actually happened during
-development*. We hit the pagination cap, the silent 15-day emptiness,
+development*. This project hit the pagination cap, the silent 15-day emptiness,
 the silently-truncated sweep, and an interrupted backfill in the first
 two days. The design didn't anticipate hypothetical problems; it
 absorbed real ones.
@@ -327,9 +339,10 @@ is, honestly, how the real thing looks at companies.
 
 ---
 
-## Part 6 — Self-test
+## Part 6 — Self-test: the ingestion layer
 
-If you can answer these from memory, you own this codebase:
+If you can answer these from memory, you own the ingestion half of this
+codebase (Parts 7–11 continue with the warehouse, dbt, and ops):
 
 1. Why does the pipeline exist at all — why not query Polymarket's API
    when you need data? *(It prunes hourly history after resolution; we
@@ -358,3 +371,261 @@ If you can answer these from memory, you own this codebase:
 10. Why no Spark/Airflow/Kafka? *(Gigabytes, not terabytes; a warehouse
     plus cron-style scheduling handles it with zero ops burden. Knowing
     when NOT to use the big tools is the senior answer.)*
+
+---
+
+## Part 7 — The warehouse (BigQuery and the loader)
+
+### What BigQuery is, in one paragraph
+
+BigQuery is Google's **analytical database**: you create *datasets*
+(folders) containing *tables*, load data in, and query it with SQL. Two
+things distinguish it from a normal database like Postgres. First, it's
+**columnar** — it stores each column separately, so a query touching two
+columns of a 300k-row table reads only those columns, which is exactly
+the shape of analytical work ("average price by day") as opposed to app
+work ("fetch user #42"). Second, it's **serverless**: there is no machine
+to size, patch, or restart, and you pay per gigabyte stored and scanned —
+at this project's scale, effectively nothing (the always-free tier covers
+10 GiB stored and 1 TiB queried per month).
+
+This project's three datasets map exactly to the architecture layers:
+
+| dataset | layer | contents |
+|---|---|---|
+| `polymarket_raw` | bronze | `raw_markets`, `raw_price_history` — untouched, append-only |
+| `polymarket_dw` | transform | dbt's staging views and mart tables |
+| `polymarket_snapshots` | history | the SCD2 snapshot of market metadata |
+
+### The loader (`ingestion/jobs/load_bigquery.py`)
+
+The job is deliberately boring: for each pending JSONL file under
+`data/raw/`, run a BigQuery *load job* (a bulk file upload — free, and
+separate from query quota), and on success **move the file to
+`data/loaded/`**. That move is the entire bookkeeping system: a file's
+location tells you whether it's been shipped. No database of load
+history, nothing to drift out of sync, and if a crash lands between load
+and move, the rerun loads the file again — producing duplicates that
+staging dedupes anyway. The same idempotency deal as everywhere else.
+
+Two schema decisions worth understanding:
+
+- **Catalog payloads land in a single JSON-typed column**, not ninety
+  autodetected columns. Gamma adds and renames fields freely; a schema
+  inferred from today's payloads breaks on next month's. A JSON column
+  *cannot* break — new fields just ride along — and dbt extracts the ~20
+  fields the models actually use at query time. Price rows, by contrast,
+  are flat and stable, so they get real typed columns.
+- **Tables are partitioned and clustered.** *Partitioning* physically
+  splits a table by a date column (`_ingested_at` for raw, `price_date`
+  for `fct_prices`), so a query filtered to one week reads one week's
+  bytes, not the whole table. *Clustering* sorts within each partition
+  (by `token_id`), so "one token's history" is a short contiguous read.
+  These are the two standard BigQuery cost/performance levers, applied
+  where the access patterns are known.
+
+### A lesson learned: sandbox vs. billing
+
+The project initially ran in BigQuery's no-credit-card *sandbox*, which
+turned out to have two production-fatal limits, both discovered the hard
+way. It forbids **DML** (UPDATE/MERGE/DELETE) — which broke the dbt
+snapshot the second time it ran, because snapshots MERGE new history
+into an existing table. And it silently stamps **60-day expirations** on
+every dataset, table, and partition — meaning a warehouse whose entire
+purpose is preserving data the source deletes would have started
+deleting its own data at day 60. The fix was enabling billing (the
+always-free tier still applies; realistic cost is about $0) and
+stripping the expirations. The general lesson: free tiers fail loudly on
+features and *silently* on retention — read the retention fine print
+first.
+
+---
+
+## Part 8 — dbt (the transform layer)
+
+### What dbt is and why it's everywhere
+
+dbt ("data build tool") turns a pile of SQL into something with software
+engineering properties. Each *model* is just a SELECT statement in a
+file; dbt materializes it as a table or view in the warehouse. The value
+is in what surrounds that:
+
+- Models reference each other with `{{ ref('stg_prices') }}` instead of
+  hard-coded table names, so dbt knows the whole **dependency graph
+  (DAG)** and builds everything in the right order.
+- **Tests** are declared next to the models in YAML ("this column is
+  unique", "this value is between 0 and 1") and run as real queries.
+- Everything is **version-controlled text** — a schema change is a code
+  review, not a mystery someone ran in a console.
+
+This layer is where analytics teams live all day, which is why dbt
+fluency is such a strong hiring signal.
+
+### The models here, and what each one teaches
+
+**Staging** (`stg_markets`, `stg_prices` — materialized as *views*,
+meaning they store nothing and re-compute when queried): this is where
+raw's mess becomes clean. `stg_markets` parses the JSON payload —
+including the double-parse of Gamma's JSON-inside-a-string fields — and
+keeps only the latest fetch per market (`ROW_NUMBER() OVER (PARTITION BY
+market_id ORDER BY _ingested_at DESC) = 1`, the standard dedupe idiom).
+`stg_prices` collapses ingestion's deliberate duplicates on
+`(token_id, t)`, preferring the finest fidelity, and **clamps prices to
+[0, 1]** — a policy that exists because the accepted-range test caught
+two real rows at 1.0025 on the first live build: order-book midpoints
+can drift marginally past $1 on degenerate books. Raw keeps the original
+values untouched; staging applies the documented judgment call.
+
+**Marts** — the tables analyses actually query, in dimensional-modeling
+vocabulary: *dimensions* describe things (`dim_markets` — one row per
+market), *facts* measure things (`fct_prices` — one row per token per
+timestamp). Two worth reading closely:
+
+- `fct_prices` is **incremental**: instead of rebuilding from scratch,
+  each run MERGEs only rows ingested since the last build, keyed on
+  `price_id` so reprocessing can never duplicate. The
+  `{% if is_incremental() %}` block in its SQL is the pattern to
+  internalize — it's dbt's single most-asked-about feature.
+- `fct_resolutions` derives each market's outcome from its terminal
+  prices (`["1","0"]` = Yes won), because "who won" is an *inference*
+  from the data, not a field — and the model's comments document exactly
+  what's included, excluded (ties, refunds), and cross-checked.
+
+`mart_calibration` is the payoff: for every resolved market, an **as-of
+join** picks the last known price at fixed moments before resolution
+(1 day / 1 week / 30 days), buckets prices into deciles, and compares
+each bucket's average price with how often those markets actually
+resolved yes — with Wilson confidence intervals (better behaved than the
+normal approximation in small or near-0/1 buckets) and Brier scores
+(mean squared error of price vs. outcome; 0.25 is the score of always
+guessing 50 cents). The fixed horizons are the methodological heart:
+prices five minutes before resolution are trivially "correct", so naive
+calibration plots flatter the market.
+
+**The snapshot** (`snapshots/markets_snapshot.sql`) is dbt's **SCD2**
+("slowly changing dimension, type 2") feature: market metadata *changes*
+— questions get edited, end dates move, volume accumulates — and the
+snapshot keeps every version with validity intervals (`dbt_valid_from` /
+`dbt_valid_to`). One elegant consequence: daily traded volume doesn't
+exist anywhere in the API, but differencing successive snapshot versions
+of cumulative volume *derives* it — a fact conjured from a dimension's
+history.
+
+**Tests and freshness** close the loop. Schema tests are executable
+assumptions (uniqueness, non-null, ranges, relationships); when one
+fails, the build goes red *before* a wrong number reaches a chart.
+`dbt source freshness` checks how stale the raw tables are — that's the
+alarm that fires if the harvester silently stops.
+
+---
+
+## Part 9 — Ops (GitHub Actions, the service account, Docker)
+
+### The scheduler
+
+GitHub Actions rents out throwaway Linux machines that run YAML-defined
+steps on a trigger — a cron schedule, a push, or a button. The
+`pipeline.yml` workflow is the entire production operation: twice a day,
+a fresh machine checks out the repo, installs the package, writes
+credentials, then runs exactly the commands a human would: sync-catalog
+→ harvest-prices → load-bigquery → `dbt build` → `dbt source freshness`
+→ rebuild the dashboard. If any step fails, the run is red and GitHub
+emails the repo owner. The machine is destroyed afterward. That is the
+whole meaning of "production" here: *unattended, on a schedule, loud on
+failure*. (At larger scale this graduates to Airflow or Dagster — worth
+it when there are dozens of interdependent pipelines, not three jobs.)
+
+### The ephemerality problem and its solution
+
+Those runner machines keep no disk between runs — so the local state
+file, the harvester's memory of what it already fetched, can't live
+there. The fix (`--watermarks-from bigquery`) is to derive watermarks
+from the warehouse itself: `SELECT token_id, MAX(t) … GROUP BY token_id`
+*is* the watermark, reconstructed from what actually landed. This is
+better than a file, not just equivalent: if a run harvests but dies
+before loading, the warehouse watermark stays behind and the next run
+automatically refetches the gap. State that's derived can't drift from
+reality, because it *is* reality. The local state file remains for
+laptop runs, where it avoids a warehouse round-trip.
+
+### The machine identity
+
+The pipeline authenticates as a **service account** — a machine user
+(`pipeline-ci@…`) with exactly two permissions: edit BigQuery data and
+run BigQuery jobs. It can't create infrastructure, touch billing, or
+read anything else — so if its key ever leaked, the blast radius is one
+project's datasets. The key lives in the repo's **encrypted secrets**,
+injected into the workflow at runtime, never in code. (War story: the
+first key upload was silently corrupted by a Windows shell prepending an
+invisible byte-order mark to the JSON — the first cloud run failed with
+"not a valid json file" on a file that looked perfectly valid.
+Credentials are bytes, not text; treat them accordingly.)
+
+### Docker's role
+
+The `Dockerfile` packages the jobs and the dbt project into one image,
+so the pipeline runs identically on any machine — a laptop, CI, a
+server. In this setup it's the *portability guarantee* rather than the
+runtime: CI installs with pip for speed but builds the image on every
+push to prove it stays runnable. The second workflow, `ci.yml`, is the
+quality gate: unit tests, an offline `dbt parse` (catches broken
+SQL/config without needing a warehouse), and that Docker build, on every
+push and PR.
+
+---
+
+## Part 10 — The dashboard
+
+`dashboard/build.py` closes the loop from raw API bytes to something a
+human looks at. The design choice to understand: it generates a
+**static page** — one self-contained HTML file with inline SVG charts,
+no server, no JavaScript framework, no external assets. An app server
+(Streamlit and friends) would need a machine awake around the clock to
+serve a handful of visits a day; a static file regenerated twice daily
+by the pipeline and pushed to the `gh-pages` branch needs nothing and
+can't go down. The charts themselves encode the analysis: dots on the
+diagonal mean the market was right; whiskers show the uncertainty the
+sample size justifies; the bar strips reveal where the data actually
+lives (heavily concentrated in the extreme buckets — most markets spend
+most of their lives priced near 0 or 1).
+
+---
+
+## Part 11 — Self-test: warehouse, dbt, and ops
+
+1. Why does the raw markets table use one JSON column instead of real
+   columns? *(The source renames fields freely; autodetected schemas
+   break on drift, a JSON column can't. Staging extracts what's needed
+   at query time.)*
+2. What do partitioning and clustering buy? *(Queries filtered by date
+   read only matching partitions; within a partition, clustering makes
+   one token's rows a contiguous read. Cost and speed, derived from
+   known access patterns.)*
+3. How does the loader know which files it already loaded? *(It doesn't
+   keep records — loaded files move to `data/loaded/`. The filesystem is
+   the state; a crash between load and move causes only a harmless
+   duplicate load.)*
+4. View vs. table vs. incremental — which model is which, and why?
+   *(Staging = views: always current, store nothing. Marts = tables:
+   computed once per build. `fct_prices` = incremental: MERGE only new
+   rows, keyed so reruns can't duplicate.)*
+5. What does the SCD2 snapshot enable that `dim_markets` can't?
+   *(History — e.g., daily volume derived by differencing successive
+   versions of cumulative volume; audits of edited questions and moved
+   deadlines.)*
+6. Why do CI runs derive watermarks from the warehouse? *(Runners keep
+   no disk; and derived state self-corrects — a harvest-then-load-crash
+   leaves the watermark behind, so the gap is refetched.)*
+7. Why a service account instead of a personal login? *(Least privilege
+   and blast radius: two roles on one project, revocable, and no human's
+   credentials embedded in a robot.)*
+8. What happens when a dbt test fails in the scheduled run? *(The build
+   exits nonzero, the workflow goes red, GitHub emails the owner — bad
+   data is stopped before it reaches the marts' consumers.)*
+9. Name a real bug each safety net caught. *(accepted_range: prices of
+   1.0025 from degenerate order books. Source freshness: guards the
+   silent-dead-harvester case. The snapshot's MERGE: surfaced the
+   sandbox DML ban before it could corrupt anything.)*
+10. Why is the dashboard a static file? *(Nothing to host, nothing to
+    crash; the pipeline regenerates it on schedule. A server earns its
+    keep only when readers need live queries, not twice-daily numbers.)*
