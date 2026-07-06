@@ -14,7 +14,11 @@ select
     condition_id,
     timestamp_seconds(t)                     as price_ts,
     date(timestamp_seconds(t))               as price_date,
-    p                                        as price,
+    -- Clamped to [0, 1]: the CLOB midpoint occasionally drifts marginally
+    -- past $1 on degenerate order books (found in the wild by this
+    -- model's accepted_range test: market 506747 at p = 1.0025). That's
+    -- microstructure noise, not probability information.
+    least(greatest(p, 0), 1)                 as price,
     fidelity_minutes,
     _ingested_at                             as ingested_at
 from {{ source('polymarket_raw', 'raw_price_history') }}

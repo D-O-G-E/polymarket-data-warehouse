@@ -107,6 +107,14 @@ def run(
             time_partitioning=bigquery.TimePartitioning(field="_ingested_at"),
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         )
+        # Announce before the upload: a multi-GB file takes minutes to
+        # stream up, and silence reads as a hang.
+        log.info(
+            "uploading %s (%.0f MB) -> %s ...",
+            file.name,
+            file.stat().st_size / 1e6,
+            table,
+        )
         try:
             with file.open("rb") as fh:
                 job = client.load_table_from_file(fh, table_ref, job_config=job_config)
