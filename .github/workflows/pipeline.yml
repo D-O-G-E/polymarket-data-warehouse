@@ -1,0 +1,62 @@
+# The scheduled pipeline: ingest -> load -> transform, unattended.
+#
+# Watermarks come from the warehouse (--watermarks-from bigquery), not a
+# local state file — runners are ephemeral, and the warehouse is the only
+# durable record of what actually landed. Failed loads self-correct: the
+# watermark stays behind and the next run refetches the gap.
+#
+# Cron cadence note: every 12h while the repo is private (GitHub's free
+# tier is 2,000 Actions minutes/month for private repos and a run takes
+# a while); bump to */6 once the repo is public (public = unlimited
+# minutes) — live markets retain ~15 days of hourly history, so 12h
+# cadence loses nothing, it just batches bigger.
+name: pipeline
+
+on:
+  schedule:
+    - cron: "23 5,17 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PDW_BQ_PROJECT: polymarket-dw
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-key.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install ".[warehouse]"
+
+      - name: Write GCP credentials
+        run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+
+      - name: Sync catalog
+        run: python -m ingestion sync-catalog --volume-floor 10000 --skip-events
+
+      - name: Harvest prices
+        run: python -m ingestion harvest-prices --watermarks-from bigquery
+
+      - name: Load to BigQuery
+        run: python -m ingestion load-bigquery
+
+      - name: dbt build
+        working-directory: dbt
+        run: |
+          dbt deps --profiles-dir .
+          dbt build --profiles-dir .
+
+      - name: Source freshness
+        working-directory: dbt
+        run: dbt source freshness --profiles-dir .

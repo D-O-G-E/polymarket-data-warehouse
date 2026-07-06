@@ -10,6 +10,13 @@ Each fetch starts overlap_seconds before the watermark: duplicate points
 are harmless (append-only raw, dbt dedupes on (token_id, t)); gaps are not.
 The watermark only advances after rows are landed, so a failed run simply
 refetches — the job is safe to rerun any time.
+
+Watermark sources: locally the state file; in CI (--watermarks-from
+bigquery) they're derived from the warehouse itself — SELECT MAX(t) per
+token — because runners are ephemeral and the warehouse is the only
+durable record of what actually landed. That's also self-correcting: if
+a previous run harvested but failed to load, the warehouse watermark
+stays behind and the next run refetches the gap.
 """
 
 from __future__ import annotations
@@ -62,11 +69,61 @@ def iter_chunks(start: int, end: int, span_s: int) -> Iterator[tuple[int, int]]:
         cursor += span_s
 
 
+class LocalWatermarks:
+    """Watermarks in the local state file (default for laptop runs)."""
+
+    def __init__(self, state: StateStore) -> None:
+        self._state = state
+
+    def get(self, token_id: str) -> int | None:
+        return self._state.get_watermark(token_id)
+
+    def set(self, token_id: str, ts: int) -> None:
+        self._state.set_watermark(token_id, ts)
+
+    def save(self) -> None:
+        self._state.save()
+
+
+class WarehouseWatermarks:
+    """Watermarks derived from the warehouse (for ephemeral CI runners).
+
+    Read-only by nature: the 'write' is the data itself landing in
+    BigQuery via load-bigquery, so set/save are no-ops.
+    """
+
+    def __init__(self, watermarks: dict[str, int]) -> None:
+        self._watermarks = watermarks
+
+    @classmethod
+    def from_bigquery(cls, project: str, dataset: str) -> "WarehouseWatermarks":
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=project)
+        query = (
+            f"SELECT token_id, MAX(t) AS wm "
+            f"FROM `{project}.{dataset}.raw_price_history` GROUP BY token_id"
+        )
+        wms = {row.token_id: int(row.wm) for row in client.query(query).result()}
+        log.info("loaded %d watermarks from BigQuery", len(wms))
+        return cls(wms)
+
+    def get(self, token_id: str) -> int | None:
+        return self._watermarks.get(token_id)
+
+    def set(self, token_id: str, ts: int) -> None:
+        pass
+
+    def save(self) -> None:
+        pass
+
+
 def run(
     settings: Settings,
     *,
     volume_floor: float | None = None,
     max_markets: int | None = None,
+    watermarks_from: str = "state",
 ) -> dict:
     http = HttpClient(
         timeout=settings.request_timeout,
@@ -75,7 +132,16 @@ def run(
     )
     gamma = GammaClient(http, settings.gamma_base_url, settings.page_limit)
     clob = ClobClient(http, settings.clob_base_url)
-    state = StateStore(settings.state_dir / "ingestion_state.json")
+    if watermarks_from == "bigquery":
+        if not settings.bq_project:
+            raise SystemExit("--watermarks-from bigquery needs PDW_BQ_PROJECT")
+        watermarks: LocalWatermarks | WarehouseWatermarks = (
+            WarehouseWatermarks.from_bigquery(settings.bq_project, settings.bq_dataset)
+        )
+    else:
+        watermarks = LocalWatermarks(
+            StateStore(settings.state_dir / "ingestion_state.json")
+        )
     run_id = new_run_id("harvest-prices")
     floor = volume_floor if volume_floor is not None else settings.volume_floor
 
@@ -108,7 +174,7 @@ def run(
                 continue
 
             now = int(time.time())
-            watermark = state.get_watermark(token)
+            watermark = watermarks.get(token)
             if watermark is not None and now - watermark < settings.min_refetch_seconds:
                 skipped_fresh += 1
                 continue
@@ -150,7 +216,7 @@ def run(
                             }
                         )
                     points += len(history)
-                    state.set_watermark(token, max(p["t"] for p in history))
+                    watermarks.set(token, max(p["t"] for p in history))
             except requests.RequestException as exc:
                 # One bad token must not kill the whole run; the watermark
                 # only moved for chunks that actually landed.
@@ -159,11 +225,11 @@ def run(
                 continue
 
             if fetched % STATE_SAVE_EVERY == 0:
-                state.save()
+                watermarks.save()
             if fetched % 100 == 0:
                 log.info("progress: %d/%d markets, %d points", i, len(markets), points)
 
-    state.save()
+    watermarks.save()
     summary = {
         "run_id": run_id,
         "markets_targeted": len(markets),

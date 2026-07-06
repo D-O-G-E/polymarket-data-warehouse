@@ -279,15 +279,37 @@ choice. Override via `PDW_*` environment variables (e.g.
 `PDW_VOLUME_FLOOR=50000`) or CLI flags (`--volume-floor`, `--data-dir`,
 `--rate-delay`, …). `python -m ingestion <job> --help` lists the flags.
 
+## Ops
+
+Two GitHub Actions workflows:
+
+- **`pipeline.yml`** — the scheduler: twice daily (cron), runs
+  sync-catalog → harvest-prices → load-bigquery → `dbt build` →
+  `dbt source freshness` on an ephemeral runner. Auth is a
+  least-privilege service account (BigQuery dataEditor + jobUser) via
+  the `GCP_SA_KEY` repo secret. Crucially, harvest runs with
+  `--watermarks-from bigquery`: the warehouse itself is the incremental
+  state (`SELECT MAX(t) … GROUP BY token_id`), because runners keep no
+  disk between runs — and it self-corrects, since a run that harvests
+  but fails to load leaves the watermark behind and the next run
+  refetches the gap. Any red run is a real failure worth reading.
+- **`ci.yml`** — on every push/PR: unit tests, offline `dbt parse`, and
+  a Docker image build with an entrypoint smoke test.
+
+The `Dockerfile` packages the jobs and the dbt project into one image so
+the pipeline runs identically anywhere; CI proves it stays buildable.
+
+At scale this orchestration would graduate to Airflow or Dagster —
+worth it when there are dozens of interdependent DAGs, not three jobs
+and a cron.
+
 ## Roadmap
 
 1. **Ingest** — raw JSONL landing zone. ✅
 2. **Load** — `load-bigquery` into BigQuery. ✅
-   (future: watermark state moves from the local JSON file into the
-   warehouse itself — `SELECT MAX(t) … GROUP BY token_id` — which is
-   what makes ephemeral CI runners viable)
 3. **Transform** — dbt staging/snapshot/marts with tests, docs and
    source-freshness checks. ✅ (see [Warehouse](#warehouse-bigquery--dbt))
-4. **Ops + serve** — Dockerfile; GitHub Actions cron (~6h) running
-   ingest → load → `dbt build`; a small dashboard publishing the
-   calibration curve and Brier scores by category. ⬅ next
+4. **Ops** — Dockerfile, scheduled pipeline + CI on GitHub Actions,
+   warehouse-derived watermarks. ✅
+5. **Serve** — a small dashboard publishing the calibration curve and
+   Brier scores by category. ⬅ next

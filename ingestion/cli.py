@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         "(recommended 10000 with --full: the complete catalog is ~2M rows, "
         "mostly zero-volume)",
     )
+    p.add_argument(
+        "--skip-events",
+        action="store_true",
+        help="markets only — for CI runs where events aren't loaded anyway",
+    )
 
     p = sub.add_parser(
         "harvest-prices",
@@ -52,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--volume-floor", type=float, help="min lifetime volume USD (default 10000)")
     p.add_argument("--max-markets", type=int, help="cap number of markets (smoke tests)")
+    p.add_argument(
+        "--watermarks-from",
+        choices=["state", "bigquery"],
+        default="state",
+        help="where per-token watermarks come from: local state file "
+        "(default) or derived from the warehouse (for ephemeral CI runners)",
+    )
 
     p = sub.add_parser(
         "backfill-prices",
@@ -105,12 +117,14 @@ def main(argv: list[str] | None = None) -> int:
             lookback_days=args.lookback_days,
             max_rows=args.max_rows,
             volume_floor=args.volume_floor,
+            skip_events=args.skip_events,
         )
     elif args.job == "harvest-prices":
         harvest_prices.run(
             settings,
             volume_floor=args.volume_floor,
             max_markets=args.max_markets,
+            watermarks_from=args.watermarks_from,
         )
     elif args.job == "backfill-prices":
         backfill_prices.run(

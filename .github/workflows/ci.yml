@@ -1,0 +1,40 @@
+# CI on every push/PR: unit tests, dbt project validation (offline —
+# parse needs no warehouse connection), and proof the Docker image builds.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install ".[dev,warehouse]"
+      - name: Unit tests
+        run: python -m pytest
+      - name: dbt parse
+        working-directory: dbt
+        env:
+          PDW_BQ_PROJECT: ci-dummy-project
+        run: |
+          dbt deps --profiles-dir .
+          dbt parse --profiles-dir . --no-version-check
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t polymarket-dw .
+      - name: Smoke the entrypoint
+        run: docker run --rm polymarket-dw --help

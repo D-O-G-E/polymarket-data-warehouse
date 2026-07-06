@@ -31,6 +31,7 @@ def run(
     lookback_days: int | None = None,
     max_rows: int | None = None,
     volume_floor: float | None = None,
+    skip_events: bool = False,
 ) -> dict:
     http = HttpClient(
         timeout=settings.request_timeout,
@@ -95,6 +96,13 @@ def run(
                 n += 1
             log.info("markets sweep %r: %d rows", name, n)
             summary[f"markets_{name}"] = n
+
+    if skip_events:
+        # CI runs skip events: they aren't loaded to the warehouse, and a
+        # file on an ephemeral runner would be fetched only to be thrown
+        # away. The laptop-side archive remains the events record.
+        log.info("sync-catalog done (events skipped): %s", summary)
+        return summary
 
     with JsonlWriter(
         settings.data_dir, "raw_events", run_id, "gamma:/events/keyset"
