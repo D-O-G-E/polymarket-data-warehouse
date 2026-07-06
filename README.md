@@ -143,6 +143,22 @@ on Gamma's updatedAt. Tests cover uniqueness, nulls, price ∈ [0,1],
 outcome values, and a warn-level prices→markets relationship; source
 freshness turns a dead harvester into a failing check.
 
+### Data model
+
+A conventional star: facts measure, dimensions describe. A market's Yes
+share pays $1 if the event happens, so its traded price *is* the crowd's
+probability — each CLOB point `{t, p}` is one timestamped probability
+estimate, and that pair is the atom everything below is built from.
+(Full walkthrough with a worked example: EXPLAINED.md Part 12.)
+
+| table | kind | grain |
+|---|---|---|
+| `dim_markets` | dimension | one row per market (current state) |
+| `markets_snapshot` | SCD2 dimension | one row per market per version |
+| `fct_prices` | fact | one row per (Yes-token, timestamp) |
+| `fct_resolutions` | fact | one row per resolved binary market |
+| `mart_calibration` | aggregate | one row per (horizon, price bucket) |
+
 ## Code tour
 
 Reading order if you're new to the codebase — each file is small and

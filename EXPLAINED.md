@@ -629,3 +629,101 @@ most of their lives priced near 0 or 1).
 10. Why is the dashboard a static file? *(Nothing to host, nothing to
     crash; the pipeline regenerates it on schedule. A server earns its
     keep only when readers need live queries, not twice-daily numbers.)*
+
+---
+
+## Part 12 — The data itself: from API entities to fact tables
+
+(Reads best alongside Parts 7–8; this is the *what*, where those were the
+*how*.)
+
+### The three entities Polymarket exposes
+
+- An **event** is the container question — "World Cup Winner". It groups
+  related markets and carries tags/categories.
+- A **market** is one tradeable binary question inside it — "Will Spain
+  win the 2026 World Cup?" Its payload carries identifiers
+  (`conditionId`, the on-chain settlement contract; two `clobTokenIds`),
+  text (`question`, `slug`, description), lifecycle (`closed`,
+  `endDate`, `closedTime`, `umaResolutionStatus`) and lifetime
+  aggregates (`volumeNum`, `liquidityNum`).
+- A **token** is what people actually trade. Every binary market mints
+  two: a Yes share and a No share. A Yes share **pays $1 if the event
+  happens, $0 if not** — which is why this project works at all: a
+  $1-if-yes claim trading at 28.5¢ *is* the market saying "28.5%
+  probable". Price and probability are the same number, not analogues.
+
+So a CLOB response point `{"t": 1783275180, "p": 0.0285}` means: *at
+this second, the midpoint between best bid and best ask for this
+market's Yes share was 2.85¢* — a timestamped crowd probability
+estimate. That pair is the atom the warehouse is built from.
+
+What the API does **not** provide, for scoping honesty: individual
+trades (the Data API — a deliberate v2), order-book depth (the history
+endpoint stopped producing data), and per-period volume (only lifetime
+cumulative — which is exactly why differencing the metadata snapshot is
+the only route to a daily-volume series).
+
+### Facts and dimensions, and why the tables are shaped this way
+
+The warehouse uses **dimensional modeling**, the standard analytical
+pattern: **facts** are measurements — numerous, numeric, timestamped,
+appended forever; **dimensions** are context — one row per *thing*,
+descriptive, joined onto facts to slice them. Every fact table begins by
+declaring its **grain** (what one row means); get the grain right and
+queries stay simple, get it wrong and every query fights the table.
+
+| table | kind | grain |
+|---|---|---|
+| `dim_markets` | dimension | one row per market (current state) |
+| `markets_snapshot` | SCD2 dimension | one row per market *per version* |
+| `fct_prices` | fact | one row per (Yes-token, timestamp) |
+| `fct_resolutions` | fact | one row per resolved binary market |
+| `mart_calibration` | aggregate mart | one row per (horizon, price bucket) |
+
+- **`fct_prices`** holds one measurement (`price`) plus keys back to the
+  market and `fidelity_minutes` as an honesty column (which resolution
+  of series this point came from). Millions of rows; every future
+  price question — volatility, drift, momentum — re-reads this table
+  rather than the API.
+- **`fct_resolutions`**' measurement is the answer to the question
+  itself: `outcome` (yes/no) and `resolved_at`. It is *derived*, because
+  the API has no clean "who won" field — terminal prices `["1","0"]`
+  mean Yes won. The model's SQL documents that inference and what it
+  excludes (ties, refunds, anything without a binary outcome to score).
+- **`dim_markets`** is the join target whenever a question says "…by
+  category / close date / volume". Its history — every edited question,
+  every moved deadline, every increment of cumulative volume — lives in
+  the snapshot.
+- **`mart_calibration`** is not a base fact but the *aggregate* the
+  schema exists to enable: for each row of `fct_resolutions`, find that
+  market's Yes-token price in `fct_prices` as of fixed moments before
+  `resolved_at` (the as-of join), bucket by price, compare bucket price
+  to bucket outcome rate.
+
+### One market's complete journey
+
+The "Will Donald Trump win the 2024 US Presidential Election?" market,
+end to end:
+
+1. **Raw**: each catalog sync lands its full ~90-field payload as one
+   row in `raw_markets` — including `outcomePrices: '["1", "0"]'` and
+   `closedTime: 2024-11-06 15:17:41+00` once resolved.
+2. **Staging**: `stg_markets` keeps the latest fetch, parses the
+   stringified arrays, and extracts its Yes token id (`21742633…6455`).
+3. **Dimension**: one row in `dim_markets` (question, slug, volume
+   ≈ $1.53B, closed, oracle-confirmed).
+4. **Prices**: the token's 614 recoverable points (12-hourly — finer
+   history was already pruned by the source) are rows in `fct_prices`,
+   spanning January to November 2024, each tagged
+   `fidelity_minutes = 720`.
+5. **Resolution**: terminal prices `["1","0"]` become one
+   `outcome = 'yes'` row in `fct_resolutions`, `resolved_at`
+   2024-11-06.
+6. **Analysis**: at each horizon, the as-of join finds its price
+   (≈ 60¢ a day before resolution), drops it in the matching bucket of
+   `mart_calibration`, and it becomes one of the observations behind
+   one dot on the dashboard.
+
+Multiply that journey by every market above the volume floor, and that
+is the entire system.
