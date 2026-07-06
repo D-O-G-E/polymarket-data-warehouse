@@ -27,6 +27,10 @@ parsed as (
         json_value(payload, '$.conditionId')                           as condition_id,
         json_value(payload, '$.question')                              as question,
         json_value(payload, '$.slug')                                  as slug,
+        -- Parent event (markets embed their event refs): the grouping
+        -- key for multi-outcome analyses like price coherence.
+        json_value(payload, '$.events[0].id')                          as event_id,
+        json_value(payload, '$.events[0].slug')                        as event_slug,
 
         json_value_array(json_value(payload, '$.clobTokenIds'))[safe_offset(0)]
                                                                        as yes_token_id,

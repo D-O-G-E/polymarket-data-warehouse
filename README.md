@@ -61,24 +61,30 @@ layer holds data the API can no longer give anyone. **The warehouse
 becomes more valuable than its source over time.** That is the textbook
 reason data platforms exist, in miniature.
 
-The downstream questions this data is collected to answer:
+The downstream questions this data is collected to answer, each now a
+queryable mart:
 
-1. **Calibration** (flagship): when Polymarket prices an event at 70%,
-   does it happen ~70% of the time? Measured at fixed horizons before
-   resolution (24h / 7d / 30d), bucketed by price, with Brier scores and
-   confidence intervals.
-2. **Favorite–longshot bias**: are 5–15¢ outcomes systematically
-   overpriced, as in the horse-racing literature?
-3. **Price dynamics**: how early does the market "decide"? Volatility
-   and drift as functions of time-to-resolution.
-4. **Coherence**: within a multi-outcome event, do the Yes prices sum
-   to ~1?
-5. **Volume structure**: category growth, concentration, market
-   lifecycles.
+1. **Calibration** (flagship → `mart_calibration`, and the dashboard):
+   when Polymarket prices an event at 70%, does it happen ~70% of the
+   time? Measured at fixed horizons before resolution (24h / 7d / 30d),
+   bucketed by price, with Brier scores and Wilson intervals.
+2. **Favorite–longshot bias** (→ the extreme buckets of
+   `mart_calibration`): are cheap outcomes systematically mispriced?
+   Early sample says longshots *under*priced at week-plus horizons —
+   hedged pending selection-bias controls.
+3. **Price dynamics** (→ `mart_price_dynamics`): how early does the
+   market "decide"? Mean distance-to-outcome and mean daily move as
+   functions of days-to-resolution.
+4. **Coherence** (→ `mart_event_coherence`): within a multi-outcome
+   event, do the Yes prices sum to ~1?
+5. **Volume structure** (→ `mart_daily_volume`): daily traded volume,
+   derived by differencing the metadata snapshot's cumulative volume —
+   a series that exists nowhere in the API. Grows richer with snapshot
+   age (history begins 2026-07-05).
 
-Questions 2–5 need *zero* ingestion beyond what's already captured —
-new questions cost a SQL model, not an engineering sprint. That
-flexibility is the point of a warehouse.
+Questions 2–5 needed *zero* ingestion beyond what was already captured —
+each cost one SQL model, not an engineering sprint. That flexibility is
+the point of a warehouse, and it held in practice.
 
 ## The three jobs
 
@@ -158,6 +164,9 @@ estimate, and that pair is the atom everything below is built from.
 | `fct_prices` | fact | one row per (Yes-token, timestamp) |
 | `fct_resolutions` | fact | one row per resolved binary market |
 | `mart_calibration` | aggregate | one row per (horizon, price bucket) |
+| `mart_price_dynamics` | aggregate | one row per days-before-resolution (0–30) |
+| `mart_event_coherence` | aggregate | one row per (negRisk event, day) |
+| `mart_daily_volume` | derived fact | one row per (market, day with a volume change) |
 
 ## Code tour
 

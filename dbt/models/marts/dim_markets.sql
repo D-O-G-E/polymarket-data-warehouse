@@ -6,6 +6,8 @@ select
     condition_id,
     question,
     slug,
+    event_id,
+    event_slug,
     yes_token_id,
     no_token_id,
     is_active,

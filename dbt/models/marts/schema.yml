@@ -48,6 +48,55 @@ models:
       - name: resolved_at
         tests: [not_null]
 
+  - name: mart_event_coherence
+    description: >
+      Do a multi-outcome event's Yes prices sum to ~1? Grain: one row per
+      (negRisk event, day), only on days where every market in the event
+      has a price. deviation = sum − 1.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [event_id, price_date]
+    columns:
+      - name: event_id
+        tests: [not_null]
+      - name: sum_yes_prices
+        tests: [not_null]
+
+  - name: mart_price_dynamics
+    description: >
+      How early does the market decide? Grain: one row per
+      days-before-resolution (0–30). avg_abs_error is mean |price −
+      outcome|; avg_abs_daily_move is mean |day-over-day price change|.
+    columns:
+      - name: days_before
+        tests: [unique, not_null]
+      - name: n_markets
+        tests: [not_null]
+
+  - name: mart_daily_volume
+    description: >
+      Daily traded volume per market, derived by differencing the SCD2
+      snapshot's cumulative volume — no daily series exists upstream.
+      Grain: one row per (market, snapshot date with a change);
+      days_since_prev flags spans longer than one day.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [market_id, snap_date]
+    columns:
+      - name: volume_delta_usd
+        description: >
+          Warn-level non-negativity: cumulative volume should never
+          decrease; a negative delta means the source restated a market's
+          history and is worth a look, not a failed build.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+              config:
+                severity: warn
+
   - name: mart_calibration
     description: >
       Calibration of Polymarket prices at fixed horizons before resolution.
